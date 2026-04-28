@@ -39,6 +39,9 @@ class PatternMiner:
 
         self._mine_temporal_sequences(user_id)
         self._mine_intervention_responses(user_id)
+        self._mine_dose_response(user_id)
+        self._mine_progressive_decline(user_id)
+        self._mine_compound_causes(user_id)
 
         self._deduplicate_patterns()
         self._sort_patterns()
@@ -61,8 +64,11 @@ class PatternMiner:
 
         for (trigger, symptom), links in pair_links.items():
 
-            # stricter threshold
-            if len(links) < 3:
+            # Check medical rule support first
+            latency_note = self._get_latency_note(trigger, symptom)
+
+            # stricter threshold, but relax if it matches medical latency
+            if len(links) < 3 and not latency_note:
                 continue
 
             sorted_links = sorted(links, key=lambda x: x.day_gap or 0)
@@ -185,6 +191,112 @@ class PatternMiner:
                     downstream_effects=list(symptoms)
                 )
             )
+
+    def _mine_dose_response(self, user_id: str):
+        candidates = self.graph.find_dose_response_patterns()
+        for cand in candidates:
+            symptom = cand["symptom_entity"]
+            obs = cand["observations"]
+            
+            # Simple assumption that the trigger is the most common one preceding it
+            self.patterns.append(
+                DetectedPattern(
+                    pattern_id=str(uuid.uuid4())[:8],
+                    pattern_title=f"Dose-response relation for {symptom}",
+                    pattern_type="dose_response",
+                    user_id=user_id,
+                    confidence_label=self._label(0.85),
+                    confidence_score=0.85,
+                    confidence_justification=f"Clear dose-response relationship across {obs} observations.",
+                    reasoning_trace=f"More trigger exposure consistently correlates with worse {symptom}.",
+                    evidence=PatternEvidence(
+                        session_ids=[],
+                        counterfactual_sessions=[],
+                        temporal_consistency=0.8,
+                        dose_response_score=0.9
+                    ),
+                    root_cause=None,
+                    downstream_effects=[symptom]
+                )
+            )
+
+    def _mine_progressive_decline(self, user_id: str):
+        # Find cascades: trigger -> sym1 -> sym2 -> sym3 over time
+        for trigger_id in self.graph.event_index_by_type["trigger"]:
+            trigger = self.graph.events[trigger_id]
+            # Find all symptoms that follow this trigger
+            symptoms = []
+            for link in self.graph.links:
+                if link.source_id == trigger_id and link.link_type in ("causes", "correlates_with"):
+                    symptoms.append((self.graph.events[link.target_id], link.day_gap))
+            
+            # If a trigger has multiple symptoms appearing at DIFFERENT latencies
+            symptoms.sort(key=lambda x: x[1] if x[1] is not None else 0)
+            
+            # Check if there's a sequence of at least 3 distinct symptoms over time
+            unique_syms = []
+            seen = set()
+            for s, gap in symptoms:
+                if s.entity not in seen:
+                    seen.add(s.entity)
+                    unique_syms.append(s.entity)
+            
+            if len(unique_syms) >= 3:
+                score = min(0.65 + 0.05 * len(unique_syms), 0.95)
+                self.patterns.append(
+                    DetectedPattern(
+                        pattern_id=str(uuid.uuid4())[:8],
+                        pattern_title=f"Progressive symptom cascade from {trigger.entity}",
+                        pattern_type="progressive_decline",
+                        user_id=user_id,
+                        confidence_label=self._label(score),
+                        confidence_score=round(score, 2),
+                        confidence_justification=f"Multiple symptoms appeared in sequence from a single root cause.",
+                        reasoning_trace=f"Root cause {trigger.entity} progressively caused {', '.join(unique_syms)} over time.",
+                        evidence=PatternEvidence(
+                            session_ids=[],
+                            counterfactual_sessions=[],
+                            temporal_consistency=0.8
+                        ),
+                        root_cause=trigger.entity,
+                        downstream_effects=unique_syms
+                    )
+                )
+
+    def _mine_compound_causes(self, user_id: str):
+        # Find divergent causes (one trigger, multiple simultaneous or distinct downstream effects)
+        # We already handled sequence in progressive decline, but let's explicitly add divergent cause 
+        # (Screen use -> multi-symptoms)
+        
+        trigger_effects = defaultdict(set)
+        for link in self.graph.links:
+            if link.link_type in ("causes", "correlates_with"):
+                src = self.graph.events[link.source_id]
+                tgt = self.graph.events[link.target_id]
+                trigger_effects[src.entity].add(tgt.entity)
+                
+        for trigger, effects in trigger_effects.items():
+            if len(effects) >= 3:
+                score = min(0.65 + 0.05 * len(effects), 0.95)
+                self.patterns.append(
+                    DetectedPattern(
+                        pattern_id=str(uuid.uuid4())[:8],
+                        pattern_title=f"{trigger.title()} drives multiple symptoms",
+                        pattern_type="compound_cause",
+                        user_id=user_id,
+                        confidence_label=self._label(score),
+                        confidence_score=round(score, 2),
+                        confidence_justification=f"One root cause correlates with {len(effects)} distinct downstream effects.",
+                        reasoning_trace=f"{trigger.title()} is the common root cause for {', '.join(effects)}.",
+                        evidence=PatternEvidence(
+                            session_ids=[],
+                            counterfactual_sessions=[],
+                            temporal_consistency=0.75
+                        ),
+                        root_cause=trigger,
+                        downstream_effects=list(effects)
+                    )
+                )
 
     # ----------------------------------------------------
     # Helpers

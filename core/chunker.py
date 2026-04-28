@@ -38,8 +38,8 @@ class TimelineChunker:
     
     def __init__(
         self,
-        verbatim_window: int = 3,
-        summary_window: int = 4,
+        verbatim_window: int = 15,
+        summary_window: int = 0,
         max_tokens_per_chunk: int = 4000
     ):
         self.verbatim_window = verbatim_window

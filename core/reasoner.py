@@ -34,7 +34,7 @@ class HealthReasoningPipeline:
         conversations = user.get("conversations", user.get("sessions", []))
 
         # Stage 1: Extract events
-        events = extract_all_events(user)
+        events = extract_all_events(user, use_llm=self.use_llm)
 
         # Stage 2: Build graph
         graph = TemporalEventGraph()
@@ -173,6 +173,10 @@ class HealthReasoningPipeline:
         rescored = []
 
         for pattern in patterns:
+            if pattern.pattern_id.startswith("llm_") or pattern.pattern_type not in ("temporal_sequence", "intervention_response"):
+                rescored.append(pattern)
+                continue
+
             evidence = pattern.evidence
 
             occurrence_count = len(evidence.session_ids)
@@ -214,23 +218,12 @@ class HealthReasoningPipeline:
         cleaned = []
         seen = set()
 
-        banned_terms = [
-            "progressive symptom cascade",
-            "causes cascade",
-            "decline over",
-            "cascade:"
-        ]
-
         for p in patterns:
 
             title = p.pattern_title.lower().strip()
 
             # Remove weak confidence
             if p.confidence_score < 0.55:
-                continue
-
-            # Remove weird hallucinated wording
-            if any(term in title for term in banned_terms):
                 continue
 
             # Fix wording

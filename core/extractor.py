@@ -174,6 +174,30 @@ class HealthEntityExtractor:
 
         clean = clean_text(all_text)
 
+        if self.use_llm:
+            from core.llm_engine import get_reasoner
+            reasoner = get_reasoner()
+            if reasoner.available():
+                try:
+                    llm_events = reasoner.extract_events(clean)
+                    for e in llm_events:
+                        entity = e.get("entity", "").lower()
+                        event_type = e.get("event_type", "symptom")
+                        events.append(ExtractedEvent(
+                            event_id=f"{session_id}_{event_type[:3]}_{entity.replace(' ', '_')}",
+                            session_id=session_id,
+                            timestamp=timestamp,
+                            event_type=event_type,
+                            entity=entity,
+                            description=e.get("description", ""),
+                            severity=e.get("severity"),
+                            attributes={"temporal_marker": e.get("temporal_marker")}
+                        ))
+                    return events
+                except Exception as e:
+                    print(f"LLM extraction failed (falling back to rules): {e}")
+
+        # Fallback to hardcoded sets if LLM not used or not available
         # Extract symptoms
         symptom_hits = self._find_entities(clean, self.symptoms)
         for entity, spans in symptom_hits.items():
@@ -264,9 +288,9 @@ class HealthEntityExtractor:
         return False
 
 
-def extract_all_events(user: Dict[str, Any]) -> List[ExtractedEvent]:
+def extract_all_events(user: Dict[str, Any], use_llm: bool = True) -> List[ExtractedEvent]:
     """Convenience function: extract all events from a user's conversations."""
-    extractor = HealthEntityExtractor()
+    extractor = HealthEntityExtractor(use_llm=use_llm)
     conversations = user.get("conversations", user.get("sessions", []))
 
     all_events = []
