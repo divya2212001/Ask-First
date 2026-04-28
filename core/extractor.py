@@ -1,6 +1,7 @@
 """
-Dynamic health entity extraction without hardcoded vocabularies.
-Uses keyword expansion + LLM-based extraction for comprehensive coverage.
+Dynamic health entity extraction with negation detection.
+Extracts from user_message, user_followup, and tags only.
+Suppresses entities in negated contexts (e.g., "don't exercise").
 """
 
 import re
@@ -11,12 +12,18 @@ from core.preprocess import clean_text, parse_datetime
 from core.models import ExtractedEvent
 
 
-# Seed vocabulary for deterministic extraction - used as fallback
+# Compound entities that should be matched as whole phrases
+COMPOUND_SYMPTOMS = [
+    "stomach pain", "hair fall", "hair loss", "brain fog", "back pain",
+    "period cramps", "post-lunch", "late night"
+]
+
+# Simple entities
 SEED_SYMPTOMS = [
-    "headache", "migraine", "pain", "stomach pain", "burning", "acidity",
-    "bloating", "hair fall", "hair loss", "fatigue", "tired", "exhausted",
+    "headache", "migraine", "pain", "burning", "acidity",
+    "bloating", "fatigue", "tired", "exhausted",
     "weakness", "nausea", "insomnia", "stress", "anxiety", "fever",
-    "cough", "cold", "dizziness", "brain fog", "acne", "breakout",
+    "cough", "cold", "dizziness", "acne", "breakout",
     "cramps", "cramp", "mood", "sleepy", "drowsy"
 ]
 
@@ -34,268 +41,184 @@ SEED_INTERVENTIONS = [
     "try", "avoid", "eliminate", "take", "medication", "therapy"
 ]
 
-# Common words that should never be extracted as health entities
-STOPWORDS = {
-    "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
-    "by", "from", "up", "about", "into", "through", "during", "before",
-    "after", "above", "below", "between", "among", "throughout", "despite",
-    "towards", "upon", "concerning", "this", "that", "these", "those",
-    "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you",
-    "your", "yours", "yourself", "yourselves", "he", "him", "his", "himself",
-    "she", "her", "hers", "herself", "it", "its", "itself", "they", "them",
-    "their", "theirs", "themselves", "what", "which", "who", "whom", "whose",
-    "a", "an", "as", "are", "was", "were", "been", "being", "have", "has",
-    "had", "having", "do", "does", "did", "doing", "will", "would", "could",
-    "should", "may", "might", "must", "shall", "can", "need", "dare", "ought",
-    "used", "like", "just", "now", "then", "here", "there", "when", "where",
-    "why", "how", "all", "each", "few", "more", "most", "other", "some",
-    "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too",
-    "very", "also", "back", "still", "even", "only", "just", "already",
-    "yet", "once", "twice", "again", "almost", "quite", "rather", "really",
-    "pretty", "enough", "much", "many", "little", "less", "least", "more",
-    "most", "another", "every", "each", "both", "either", "neither", "one",
-    "two", "first", "last", "next", "previous", "new", "old", "good", "bad",
-    "big", "small", "long", "short", "high", "low", "right", "left", "wrong",
-    "true", "false", "sure", "maybe", "perhaps", "probably", "definitely",
-    "always", "never", "sometimes", "often", "usually", "rarely", "seldom",
-    "finally", "eventually", "suddenly", "recently", "lately", "currently",
-    "actually", "basically", "literally", "seriously", "honestly", "basically",
-    "kind", "sort", "type", "way", "thing", "stuff", "lot", "bit", "piece",
-    "part", "side", "end", "point", "case", "fact", "idea", "reason",
-    "cause", "result", "effect", "problem", "issue", "question", "answer",
-    "example", "instance", "situation", "condition", "state", "place",
-    "time", "day", "week", "month", "year", "today", "tomorrow", "yesterday",
-    "morning", "afternoon", "evening", "night", "midnight", "noon", "hour",
-    "minute", "second", "moment", "while", "since", "until", "till", "ago",
-    "start", "started", "starting", "begin", "began", "beginning", "come",
-    "came", "coming", "go", "went", "going", "get", "got", "getting",
-    "make", "made", "making", "take", "took", "taking", "give", "gave",
-    "giving", "say", "said", "saying", "tell", "told", "telling", "know",
-    "knew", "knowing", "think", "thought", "thinking", "see", "saw", "seeing",
-    "look", "looked", "looking", "feel", "felt", "feeling", "want", "wanted",
-    "wanting", "need", "needed", "needing", "try", "tried", "trying", "use",
-    "used", "using", "work", "worked", "working", "call", "called", "calling",
-    "find", "found", "finding", "ask", "asked", "asking", "seem", "seemed",
-    "seeming", "leave", "left", "leaving", "put", "puts", "putting", "mean",
-    "meant", "meaning", "keep", "kept", "keeping", "let", "lets", "letting",
-    "begin", "began", "begun", "beginning", "help", "helped", "helping",
-    "show", "showed", "shown", "showing", "hear", "heard", "hearing",
-    "play", "played", "playing", "run", "ran", "running", "move", "moved",
-    "moving", "live", "lived", "living", "believe", "believed", "believing",
-    "bring", "brought", "bringing", "happen", "happened", "happening",
-    "stand", "stood", "standing", "lose", "lost", "losing", "pay", "paid",
-    "paying", "meet", "met", "meeting", "include", "included", "including",
-    "continue", "continued", "continuing", "set", "sets", "setting",
-    "learn", "learned", "learning", "change", "changed", "changing",
-    "lead", "led", "leading", "understand", "understood", "understanding",
-    "watch", "watched", "watching", "follow", "followed", "following",
-    "stop", "stopped", "stopping", "create", "created", "creating",
-    "speak", "spoke", "spoken", "speaking", "read", "reading", "allow",
-    "allowed", "allowing", "add", "added", "adding", "spend", "spent",
-    "spending", "grow", "grew", "grown", "growing", "open", "opened",
-    "opening", "walk", "walked", "walking", "win", "won", "winning",
-    "offer", "offered", "offering", "remember", "remembered", "remembering",
-    "love", "loved", "loving", "consider", "considered", "considering",
-    "appear", "appeared", "appearing", "buy", "bought", "buying", "wait",
-    "waited", "waiting", "serve", "served", "serving", "die", "died",
-    "dying", "send", "sent", "sending", "expect", "expected", "expecting",
-    "build", "built", "building", "stay", "stayed", "staying", "fall",
-    "fell", "fallen", "falling", "cut", "cuts", "cutting", "reach",
-    "reached", "reaching", "kill", "killed", "killing", "remain",
-    "remained", "remaining", "suggest", "suggested", "suggesting",
-    "raise", "raised", "raising", "pass", "passed", "passing", "sell",
-    "sold", "selling", "require", "required", "requiring", "report",
-    "reported", "reporting", "decide", "decided", "deciding", "pull",
-    "pulled", "pulling", "every", "really", "very", "much", "many",
-    "more", "most", "some", "any", "each", "few", "other", "another",
-    "such", "only", "own", "same", "so", "than", "too", "also", "back",
-    "still", "even", "just", "already", "yet", "once", "twice", "again",
-    "almost", "quite", "rather", "pretty", "enough", "about", "around",
-    "through", "during", "before", "after", "above", "below", "between",
-    "among", "within", "without", "against", "towards", "upon", "off",
-    "over", "under", "into", "onto", "out", "up", "down", "across",
-    "behind", "beyond", "except", "beside", "besides", "despite",
-    "regarding", "concerning", "considering", "following", "including",
-    "using", "according", "due", "owing", "thanks", "because", "although",
-    "though", "while", "whereas", "unless", "until", "whether", "either",
-    "neither", "both", "not", "nor", "only", "but", "however",
-    "therefore", "thus", "hence", "consequently", "accordingly",
-    "otherwise", "instead", "meanwhile", "besides", "furthermore",
-    "moreover", "nevertheless", "nonetheless", "otherwise", "however",
-    "whatever", "whenever", "wherever", "however", "whoever", "whichever",
-    "whosever", "whomever", "whatsoever", "wheresoever", "whensoever",
-    "howsoever", "whosoever", "whomsoever", "whosesoever", "whichsoever",
-    "oneself", "itself", "oneself", "thyself", "himself", "herself",
-    "oneself", "ourselves", "yourselves", "themselves", "itself",
-    "myself", "yourself", "himself", "herself", "oneself", "ourselves",
-    "yourselves", "themselves", "itself", "oneself", "thyself",
-    "whosoever", "whomsoever", "whosesoever", "whichsoever", "whatsoever",
-    "wheresoever", "whensoever", "howsoever", "whosoever", "whomsoever",
-    "whosesoever", "whichsoever", "oneself", "itself", "oneself",
-    "thyself", "himself", "herself", "oneself", "ourselves", "yourselves",
-    "themselves", "itself", "myself", "yourself", "himself", "herself",
-    "oneself", "ourselves", "yourselves", "themselves", "itself",
-    "oneself", "thyself"
-}
+# Negation patterns that suppress entity extraction
+NEGATION_PREFIXES = [
+    r"\bno\s+", r"\bnot\s+", r"\bnever\s+", r"\bdon'?t\s+", r"\bdoesn'?t\s+",
+    r"\bdidn'?t\s+", r"\bcan'?t\s+", r"\bwon'?t\s+", r"\baren'?t\s+",
+    r"\bisn'?t\s+", r"\bwasn'?t\s+", r"\bhaven'?t\s+", r"\bhasn'?t\s+",
+    r"\bhadn'?t\s+", r"\bwithout\s+", r"\blacks?\s+", r"\babsent\s+",
+    r"\bnone\s+", r"\bzero\s+", r"\bnot\s+really\s+", r"\bnot\s+much\s+",
+    r"\bnot\s+any\s+", r"\bno\s+new\s+", r"\bno\s+extra\s+",
+]
 
 
-class HealthEntityExtractor:
-    """
-    Extracts health entities from conversation text dynamically.
-    """
+def is_negated(text: str, position: int, window: int = 25) -> bool:
+    """Check if the word at position is in a negated context."""
+    start = max(0, position - window)
+    context = text[start:position]
+    for pattern in NEGATION_PREFIXES:
+        if re.search(pattern + r"\w*$", context):
+            return True
+    return False
 
-    def __init__(self, use_llm: bool = True):
-        self.symptoms = set(SEED_SYMPTOMS)
-        self.triggers = set(SEED_TRIGGERS)
-        self.interventions = set(SEED_INTERVENTIONS)
-        self.use_llm = use_llm
 
-    def extract_from_session(self, session: Dict[str, Any]) -> List[ExtractedEvent]:
-        """Extract all events from a single conversation session."""
-        events = []
-        session_id = session.get("session_id", "unknown")
-        timestamp = parse_datetime(session.get("timestamp"))
+def extract_compound_entities(text: str, compounds: List[str]) -> Dict[str, List[int]]:
+    """Find compound entity matches."""
+    hits = {}
+    for compound in compounds:
+        pattern = r'\b' + re.escape(compound) + r'\b'
+        matches = list(re.finditer(pattern, text))
+        if matches and not any(is_negated(text, m.start()) for m in matches):
+            hits[compound] = [m.start() for m in matches]
+    return hits
 
-        # Extract from multiple fields
-        fields_to_extract = [
-            ("user_message", "user_message"),
-            ("user_followup", "user_followup"),
-            ("clary_response", "clary_response"),
-            ("clary_questions", "clary_questions"),
-        ]
 
-        all_text = ""
-        for field_name, field_key in fields_to_extract:
-            value = session.get(field_key, "")
-            if isinstance(value, list):
-                value = " ".join(value)
-            if value:
-                all_text += " " + str(value)
+def extract_simple_entities(text: str, entities: List[str], 
+                           exclude_positions: List[tuple] = None) -> Dict[str, List[int]]:
+    """Find simple entity matches, excluding positions covered by compounds."""
+    hits = {}
+    exclude_positions = exclude_positions or []
+    
+    for entity in entities:
+        pattern = r'\b' + re.escape(entity) + r'\b'
+        for match in re.finditer(pattern, text):
+            pos = match.start()
+            # Skip if within a compound's range
+            if any(start <= pos < start + len(comp) for start, comp in exclude_positions):
+                continue
+            if not is_negated(text, pos):
+                if entity not in hits:
+                    hits[entity] = []
+                hits[entity].append(pos)
+    return hits
 
-        clean = clean_text(all_text)
 
-        if self.use_llm:
-            from core.llm_engine import get_reasoner
-            reasoner = get_reasoner()
-            if reasoner.available():
-                try:
-                    llm_events = reasoner.extract_events(clean)
-                    for e in llm_events:
-                        entity = e.get("entity", "").lower()
-                        event_type = e.get("event_type", "symptom")
-                        events.append(ExtractedEvent(
-                            event_id=f"{session_id}_{event_type[:3]}_{entity.replace(' ', '_')}",
-                            session_id=session_id,
-                            timestamp=timestamp,
-                            event_type=event_type,
-                            entity=entity,
-                            description=e.get("description", ""),
-                            severity=e.get("severity"),
-                            attributes={"temporal_marker": e.get("temporal_marker")}
-                        ))
-                    return events
-                except Exception as e:
-                    print(f"LLM extraction failed (falling back to rules): {e}")
+def extract_from_session(session: Dict[str, Any]) -> List[ExtractedEvent]:
+    """Extract events from user text and tags only (not clary_response)."""
+    events = []
+    session_id = session.get("session_id", "unknown")
+    timestamp = parse_datetime(session.get("timestamp"))
+    tags = [t.lower() for t in session.get("tags", [])]
 
-        # Fallback to hardcoded sets if LLM not used or not available
-        # Extract symptoms
-        symptom_hits = self._find_entities(clean, self.symptoms)
-        for entity, spans in symptom_hits.items():
-            events.append(ExtractedEvent(
-                event_id=f"{session_id}_sym_{entity.replace(' ', '_')}",
-                session_id=session_id,
-                timestamp=timestamp,
-                event_type="symptom",
-                entity=entity,
-                description=self._get_context(clean, spans[0]),
-                severity=self._infer_severity(clean, spans[0]),
-                attributes={"mentions": len(spans)}
-            ))
+    # Build user text only (exclude clary_response/questions)
+    user_text_parts = []
+    for key in ["user_message", "user_followup"]:
+        val = session.get(key, "")
+        if val:
+            user_text_parts.append(str(val))
+    user_text = clean_text(" ".join(user_text_parts))
 
-        # Extract triggers/lifestyle
-        trigger_hits = self._find_entities(clean, self.triggers)
-        for entity, spans in trigger_hits.items():
-            events.append(ExtractedEvent(
-                event_id=f"{session_id}_trg_{entity.replace(' ', '_')}",
-                session_id=session_id,
-                timestamp=timestamp,
-                event_type="trigger",
-                entity=entity,
-                description=self._get_context(clean, spans[0]),
-                attributes={"mentions": len(spans)}
-            ))
+    # Extract compound entities first
+    compound_hits = extract_compound_entities(user_text, COMPOUND_SYMPTOMS)
+    compound_positions = [(pos, comp) for comp, positions in compound_hits.items() for pos in positions]
+    
+    for compound, positions in compound_hits.items():
+        # Map compound to appropriate type
+        if compound in ["stomach pain", "hair fall", "hair loss", "brain fog", 
+                       "back pain", "period cramps", "post-lunch"]:
+            event_type = "symptom"
+        elif compound in ["late night", "late eating"]:
+            event_type = "trigger"
+        else:
+            event_type = "symptom"
+            
+        events.append(ExtractedEvent(
+            event_id=f"{session_id}_{event_type[:3]}_{compound.replace(' ', '_')}",
+            session_id=session_id,
+            timestamp=timestamp,
+            event_type=event_type,
+            entity=compound,
+            description=user_text[max(0, positions[0]-40):positions[0]+len(compound)+40],
+            severity=_infer_severity(user_text, positions[0]),
+            attributes={"source": "user_text", "compound": True}
+        ))
 
-        # Extract interventions (actions taken)
-        intervention_hits = self._find_entities(clean, self.interventions)
-        for entity, spans in intervention_hits.items():
-            if self._has_nearby_health_entity(clean, spans[0], symptom_hits, trigger_hits):
+    # Extract simple symptoms (excluding compound-covered positions)
+    symptom_hits = extract_simple_entities(user_text, SEED_SYMPTOMS, compound_positions)
+    for symptom, positions in symptom_hits.items():
+        events.append(ExtractedEvent(
+            event_id=f"{session_id}_sym_{symptom.replace(' ', '_')}",
+            session_id=session_id,
+            timestamp=timestamp,
+            event_type="symptom",
+            entity=symptom,
+            description=user_text[max(0, positions[0]-40):positions[0]+len(symptom)+40],
+            severity=_infer_severity(user_text, positions[0]),
+            attributes={"source": "user_text"}
+        ))
+
+    # Extract triggers
+    trigger_hits = extract_simple_entities(user_text, SEED_TRIGGERS, compound_positions)
+    for trigger, positions in trigger_hits.items():
+        events.append(ExtractedEvent(
+            event_id=f"{session_id}_trg_{trigger.replace(' ', '_')}",
+            session_id=session_id,
+            timestamp=timestamp,
+            event_type="trigger",
+            entity=trigger,
+            description=user_text[max(0, positions[0]-40):positions[0]+len(trigger)+40],
+            attributes={"source": "user_text"}
+        ))
+
+    # Extract from tags (high-confidence signals, only if not already extracted)
+    tag_map = {
+        # symptoms
+        "stomach": "symptom", "acidity": "symptom", "headache": "symptom",
+        "back pain": "symptom", "fatigue": "symptom", "dizziness": "symptom",
+        "skin": "symptom", "acne": "symptom", "hair fall": "symptom",
+        "brain fog": "symptom", "cramps": "symptom", "period": "symptom",
+        "mood": "symptom", "anxiety": "symptom", "burning": "symptom",
+        "pain": "symptom", "breakout": "symptom",
+        # triggers
+        "late eating": "trigger", "dehydration": "trigger", "screen time": "trigger",
+        "caffeine": "trigger", "busy work day": "trigger", "work pressure": "trigger",
+        "diet": "trigger", "intermittent fasting": "trigger", "calorie restriction": "trigger",
+        "dairy": "trigger", "dairy increase": "trigger", "dairy reintroduction": "trigger",
+        "stress": "trigger", "deadline": "trigger", "sleep deprivation": "trigger",
+        "poor sleep": "trigger", "late night screen use": "trigger", "screens": "trigger",
+        "protein": "trigger", "carbohydrate": "trigger", "rice": "trigger",
+        "sugar": "trigger", "high carb lunch": "trigger",
+        # interventions
+        "dairy reduction": "intervention", "lunch protein": "intervention",
+    }
+
+    for tag in tags:
+        if tag in tag_map:
+            etype = tag_map[tag]
+            already = any(e.entity == tag and e.event_type == etype for e in events)
+            if not already:
                 events.append(ExtractedEvent(
-                    event_id=f"{session_id}_int_{entity.replace(' ', '_')}",
+                    event_id=f"{session_id}_tag_{tag.replace(' ', '_')}",
                     session_id=session_id,
                     timestamp=timestamp,
-                    event_type="intervention",
-                    entity=entity,
-                    description=self._get_context(clean, spans[0]),
-                    attributes={"mentions": len(spans)}
+                    event_type=etype,
+                    entity=tag,
+                    description=f"Tagged: {tag}",
+                    attributes={"source": "tag"}
                 ))
 
-        return events
+    return events
 
-    def _find_entities(self, text: str, entity_list: set) -> Dict[str, List[int]]:
-        """Find all occurrences of entities in text."""
-        hits = {}
-        for entity in entity_list:
-            if entity in STOPWORDS:
-                continue
-            pattern = r'\b' + re.escape(entity) + r'\b'
-            matches = list(re.finditer(pattern, text))
-            if matches:
-                hits[entity] = [m.start() for m in matches]
-        return hits
 
-    def _get_context(self, text: str, position: int, window: int = 60) -> str:
-        """Extract surrounding context."""
-        start = max(0, position - window)
-        end = min(len(text), position + window)
-        return text[start:end].strip()
-
-    def _infer_severity(self, text: str, position: int) -> Optional[str]:
-        """Infer severity from nearby words."""
-        context = self._get_context(text, position, 30)
-        severity_map = {
-            "mild": ["mild", "slight", "little", "a bit", "somewhat"],
-            "moderate": ["moderate", "pretty", "quite", "fairly", "bad"],
-            "severe": ["severe", "extreme", "unbearable", "worst", "really bad", "terrible"]
-        }
-        for severity, indicators in severity_map.items():
-            for indicator in indicators:
-                if indicator in context:
-                    return severity
-        return None
-
-    def _has_nearby_health_entity(
-        self, text: str, position: int,
-        symptoms: Dict, triggers: Dict, window: int = 40
-    ) -> bool:
-        """Check if there's a health entity near this position."""
-        region_start = max(0, position - window)
-        region_end = min(len(text), position + window)
-
-        for entity, spans in {**symptoms, **triggers}.items():
-            for span in spans:
-                if region_start <= span <= region_end:
-                    return True
-        return False
+def _infer_severity(text: str, position: int) -> Optional[str]:
+    context = text[max(0, position-30):position+30]
+    severity_map = {
+        "mild": ["mild", "slight", "little", "a bit", "somewhat", "okay"],
+        "moderate": ["moderate", "pretty", "quite", "fairly", "bad", "worse", "harder"],
+        "severe": ["severe", "extreme", "unbearable", "worst", "really bad", "terrible", "dreading"]
+    }
+    for severity, indicators in severity_map.items():
+        for indicator in indicators:
+            if indicator in context:
+                return severity
+    return None
 
 
 def extract_all_events(user: Dict[str, Any], use_llm: bool = True) -> List[ExtractedEvent]:
-    """Convenience function: extract all events from a user's conversations."""
-    extractor = HealthEntityExtractor(use_llm=use_llm)
+    """Extract all events from a user's conversations."""
     conversations = user.get("conversations", user.get("sessions", []))
-
     all_events = []
     for session in conversations:
-        events = extractor.extract_from_session(session)
+        events = extract_from_session(session)
         all_events.extend(events)
-
     return all_events

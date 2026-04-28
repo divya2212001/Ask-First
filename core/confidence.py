@@ -31,16 +31,8 @@ class ConfidenceBreakdown:
 class ConfidenceScorer:
     """
     Multi-factor confidence scoring system.
-    
-    Factors:
-    1. Repeated Evidence: How many times was the pattern observed?
-    2. Temporal Consistency: Are the time gaps between trigger and effect consistent?
-    3. Counterfactual Support: Does the effect disappear when the trigger is absent?
-    4. Medical Plausibility: Does the latency match known medical phenomena?
-    5. Resolution Evidence: Does the effect improve when trigger is removed?
-    6. Dose Response: Does more trigger = more effect?
     """
-    
+
     def __init__(self):
         self.weights = {
             "repeated_evidence": 0.20,
@@ -50,7 +42,7 @@ class ConfidenceScorer:
             "resolution": 0.15,
             "dose_response": 0.10
         }
-    
+
     def score(
         self,
         occurrence_count: int,
@@ -66,26 +58,26 @@ class ConfidenceScorer:
         """
         # 1. Repeated Evidence
         repeated_score = min(occurrence_count * 0.22, 0.90)
-        
+
         # 2. Temporal Consistency
         temporal_score = temporal_consistency
-        
+
         # 3. Counterfactual Support
         if total_sessions > 0:
             counterfactual_ratio = counterfactual_sessions / total_sessions
             counterfactual_score = min(counterfactual_ratio * 2, 0.95)
         else:
             counterfactual_score = 0.0
-        
+
         # 4. Medical Plausibility
         medical_score = 0.85 if medical_rule_match else 0.55
-        
+
         # 5. Resolution Evidence
         resolution_score = 0.90 if has_resolution else 0.40
-        
+
         # 6. Dose Response
         dose_score = dose_response if dose_response is not None else 0.50
-        
+
         # Weighted sum
         final = (
             repeated_score * self.weights["repeated_evidence"] +
@@ -95,7 +87,7 @@ class ConfidenceScorer:
             resolution_score * self.weights["resolution"] +
             dose_score * self.weights["dose_response"]
         )
-        
+
         # Bonus for multiple strong signals
         strong_signals = sum([
             repeated_score > 0.7,
@@ -107,7 +99,7 @@ class ConfidenceScorer:
         ])
         final += min(strong_signals * 0.03, 0.1)
         final = min(final, 0.98)
-        
+
         # Determine label
         if final >= 0.82:
             label = ConfidenceLevel.HIGH
@@ -115,33 +107,33 @@ class ConfidenceScorer:
             label = ConfidenceLevel.MEDIUM
         else:
             label = ConfidenceLevel.LOW
-        
+
         # Build justification
         parts = []
         if occurrence_count >= 4:
             parts.append(f"{occurrence_count} repeated episodes")
         elif occurrence_count >= 2:
             parts.append(f"{occurrence_count} episodes observed")
-        
+
         if temporal_consistency > 0.8:
             parts.append("highly consistent timing")
         elif temporal_consistency > 0.6:
             parts.append("moderately consistent timing")
-        
+
         if counterfactual_sessions >= 2:
             parts.append(f"{counterfactual_sessions} counterfactual clean sessions")
-        
+
         if medical_rule_match:
             parts.append("matches known medical latency")
-        
+
         if has_resolution:
             parts.append("symptom resolved after intervention")
-        
+
         if dose_response and dose_response > 0.6:
             parts.append("dose-response relationship evident")
-        
+
         justification = "; ".join(parts) + "." if parts else "Limited evidence, low confidence."
-        
+
         return ConfidenceBreakdown(
             repeated_evidence_score=round(repeated_score, 2),
             temporal_consistency_score=round(temporal_score, 2),
@@ -153,3 +145,4 @@ class ConfidenceScorer:
             final_label=label,
             justification=justification
         )
+

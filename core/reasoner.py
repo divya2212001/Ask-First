@@ -1,7 +1,6 @@
 """
 Main Reasoning Orchestrator for Ask First.
-Updated version with pattern cleanup, deduplication, filtering,
-and top-quality output selection.
+Production pipeline with temporal reasoning and confidence scoring.
 """
 
 import json
@@ -34,27 +33,22 @@ class HealthReasoningPipeline:
         conversations = user.get("conversations", user.get("sessions", []))
 
         # Stage 1: Extract events
-        events = extract_all_events(user, use_llm=self.use_llm)
+        events = extract_all_events(user, use_llm=False)
 
         # Stage 2: Build graph
         graph = TemporalEventGraph()
         graph.add_events(events)
         graph.build_temporal_links()
 
-        # Stage 3: Deterministic mining
+        # Stage 3: Deterministic mining with session data
         miner = PatternMiner(graph)
+        miner.set_session_data(conversations)
         patterns = miner.mine_all_patterns(user_id)
 
-        # Stage 4: LLM enhancement
+        # Stage 4: LLM enhancement (optional)
         if self.llm and self.llm.available():
             llm_patterns = self._llm_enhancement(user, conversations, patterns)
-
-            # only useful llm patterns
-            llm_patterns = [
-                p for p in llm_patterns
-                if p.confidence_score >= 0.60
-            ]
-
+            llm_patterns = [p for p in llm_patterns if p.confidence_score >= 0.60]
             patterns.extend(llm_patterns)
 
         # Stage 5: Re-score patterns
@@ -135,7 +129,7 @@ class HealthReasoningPipeline:
                 pattern = DetectedPattern(
                     pattern_id=f"llm_{hash(p['pattern_title']) % 10000}",
                     pattern_title=p["pattern_title"],
-                    pattern_type=p.get("pattern_type", "temporal"),
+                    pattern_type=p.get("pattern_type", "temporal_sequence"),
                     user_id=user.get("user_id", "unknown"),
                     confidence_label=p.get("confidence_label", "medium"),
                     confidence_score=p.get("confidence_score", 0.60),
@@ -173,7 +167,7 @@ class HealthReasoningPipeline:
         rescored = []
 
         for pattern in patterns:
-            if pattern.pattern_id.startswith("llm_") or pattern.pattern_type not in ("temporal_sequence", "intervention_response"):
+            if pattern.pattern_id.startswith("llm_"):
                 rescored.append(pattern)
                 continue
 
@@ -185,6 +179,7 @@ class HealthReasoningPipeline:
             has_resolution = (
                 "improv" in pattern.reasoning_trace.lower()
                 or "resolv" in pattern.reasoning_trace.lower()
+                or "resolved" in pattern.pattern_title.lower()
             )
 
             medical_match = pattern.medical_latency_note is not None
@@ -220,26 +215,21 @@ class HealthReasoningPipeline:
 
         for p in patterns:
 
-            title = p.pattern_title.lower().strip()
-
-            # Remove weak confidence
             if p.confidence_score < 0.55:
                 continue
 
-            # Fix wording
-            title = title.replace("water", "low hydration")
-            title = title.replace("consistently", "")
-            title = " ".join(title.split())
-
-            # Duplicate key
-            key = title.replace("precedes", "").replace("causes", "").strip()
-
+            # Better dedup key
+            key = (p.pattern_type, p.root_cause, tuple(sorted(p.downstream_effects)))
             if key in seen:
                 continue
-
             seen.add(key)
 
-            p.pattern_title = title.title()
+            # Clean up title
+            title = p.pattern_title
+            title = title.replace("Precedes", "triggers")
+            title = title.replace("precedes", "triggers")
+            p.pattern_title = title
+
             cleaned.append(p)
 
         return cleaned
@@ -256,3 +246,4 @@ def run_analysis(user: Dict[str, Any], use_llm: bool = True):
 def run_analysis_streaming(user: Dict[str, Any], use_llm: bool = True):
     pipeline = HealthReasoningPipeline(use_llm=use_llm)
     yield from pipeline.analyze_user_streaming(user)
+
