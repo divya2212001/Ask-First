@@ -54,7 +54,7 @@ git clone <repo-url>
 cd Ask-First
 
 # Create virtual environment
-python -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
@@ -225,6 +225,3 @@ The system is designed to find these pattern types:
 | Screen use → multi-symptoms     | USR003 | One root cause, 3 downstream effects                     |
 | Progressive symptom cascade     | USR002 | Dizziness → fatigue → hair fall sequence                 |
 
-## License
-
-Internal use for Ask First assignment.
